@@ -4,6 +4,16 @@ Modelo de predicción basado en **ELO histórico** + **Ranking FIFA** con **simu
 
 ---
 
+## Resultados en Google Sheets
+
+| Archivo | Descripción |
+|---------|-------------|
+| [📅 Partidos y Proyecciones](https://docs.google.com/spreadsheets/d/11QDCdK48WzA5-FFGN6qU6ELMrMH7zcAsWj7CBJCn16g/edit) | 72 partidos de fase de grupos con probabilidades y ganador proyectado |
+| [🏆 Probabilidades de Campeonato](https://docs.google.com/spreadsheets/d/1kmZyOijsDKZi9EwnPrBLlNAC0cNhwJhEtVLs-6pXCT0/edit) | 48 selecciones — comparativa modelo ELO vs ELO+FIFA |
+| [🪜 Bracket Eliminatorio](https://docs.google.com/spreadsheets/d/1a2EkbkNUPmVUjW4ZJdxdjvixUa-ZvdoMj4tERe8jJ6Y/edit) | Ronda de 32 → Final con ganador proyectado en cada duelo |
+
+---
+
 ## Descripción del Modelo
 
 El modelo combina dos fuentes de datos para calcular un **rating compuesto** por selección:
