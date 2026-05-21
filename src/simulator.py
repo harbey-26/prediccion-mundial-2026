@@ -5,14 +5,17 @@ Flujo:
   1. Fase de grupos: cada equipo juega 3 partidos → clasifican top-2 + 8 mejores terceros
   2. Fase eliminatoria: ronda de 32 → 16 → QF → SF → Final
   3. Repetir N veces y acumular estadísticas
+
+El rating usado puede ser ELO puro o un rating compuesto (ELO + FIFA ranking).
 """
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from tqdm import tqdm
 
 from .elo_calculator import win_probability
 from .world_cup_2026 import GROUPS
+from .fifa_ranking import load_fifa_rankings, composite_rating
 
 
 def simulate_match(
@@ -181,18 +184,49 @@ def simulate_tournament(ratings: Dict[str, float]) -> str:
     return champion
 
 
+def build_composite_ratings(
+    elo_ratings: Dict[str, float],
+    elo_weight: float = 0.6,
+) -> Dict[str, float]:
+    """
+    Combina ELO histórico con puntos FIFA actuales en un rating compuesto.
+    Carga automáticamente el ranking FIFA desde el archivo local.
+    """
+    fifa_rankings = load_fifa_rankings()
+    composite = {}
+    all_teams = set(elo_ratings.keys()) | set(fifa_rankings.keys())
+    for team in all_teams:
+        composite[team] = composite_rating(team, elo_ratings, fifa_rankings, elo_weight)
+    return composite
+
+
 def run_monte_carlo(
     ratings: Dict[str, float],
     n_simulations: int = 100_000,
+    use_composite: bool = False,
+    elo_weight: float = 0.6,
 ) -> pd.DataFrame:
     """
     Ejecuta N simulaciones completas del Mundial 2026.
+
+    Args:
+        ratings: dict equipo → ELO rating
+        n_simulations: número de torneos a simular
+        use_composite: si True, combina ELO con ranking FIFA actual
+        elo_weight: peso del ELO en el rating compuesto (0.0–1.0)
+
     Retorna DataFrame con probabilidades de campeonato por equipo.
     """
+    if use_composite:
+        print(f"  Usando rating compuesto (ELO {elo_weight:.0%} + FIFA {1-elo_weight:.0%})")
+        effective_ratings = build_composite_ratings(ratings, elo_weight)
+    else:
+        effective_ratings = ratings
+
     champion_counts: Dict[str, int] = {}
 
     for _ in tqdm(range(n_simulations), desc="Simulando torneos"):
-        champion = simulate_tournament(ratings)
+        champion = simulate_tournament(effective_ratings)
         champion_counts[champion] = champion_counts.get(champion, 0) + 1
 
     results = pd.DataFrame([
