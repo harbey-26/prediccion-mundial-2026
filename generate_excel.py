@@ -99,8 +99,8 @@ def load_all_data():
     comp_ratings = build_composite_ratings(elo_ratings, elo_weight=0.6)
 
     print("Cargando resultados de simulaciones...")
-    elo_results  = pd.read_csv("results/predicciones_elo.csv")
-    comp_results = pd.read_csv("results/predicciones_compuesto.csv")
+    elo_results  = pd.read_csv("results/csv/predicciones_elo.csv")
+    comp_results = pd.read_csv("results/csv/predicciones_compuesto.csv")
 
     return elo_ratings, fifa_rankings, comp_ratings, elo_results, comp_results
 
@@ -692,8 +692,8 @@ def main():
     sheet_championship(wb, elo_results, comp_results)
     sheet_ratings(wb, elo_ratings, fifa_rankings, comp_ratings)
 
-    os.makedirs("results", exist_ok=True)
-    output_path = "results/Mundial_2026_Predicciones.xlsx"
+    os.makedirs("results/excel", exist_ok=True)
+    output_path = "results/excel/Mundial_2026_Predicciones.xlsx"
     wb.save(output_path)
     print(f"\n✅ Excel guardado en: {output_path}")
     print(f"   Tamaño: {os.path.getsize(output_path)/1024:.0f} KB")

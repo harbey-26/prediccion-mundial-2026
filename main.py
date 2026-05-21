@@ -163,20 +163,21 @@ def main():
         print(f"  Grupo {group}: {elo_str}")
 
     # 7. Monte Carlo
-    os.makedirs("results", exist_ok=True)
+    os.makedirs("results/csv", exist_ok=True)
+    os.makedirs("results/excel", exist_ok=True)
 
     if args.compare:
         # Correr ambos modelos
         print(f"\n=== MODELO ELO PURO ({args.sims:,} simulaciones) ===")
         elo_results = run_monte_carlo(elo_ratings, args.sims, use_composite=False)
-        elo_results.to_csv("results/predicciones_elo.csv", index=False)
+        elo_results.to_csv("results/csv/predicciones_elo.csv", index=False)
 
         print(f"\n=== MODELO ELO + FIFA ({args.sims:,} simulaciones) ===")
         comp_results = run_monte_carlo(elo_ratings, args.sims, use_composite=True, elo_weight=args.elo_weight)
-        comp_results.to_csv("results/predicciones_compuesto.csv", index=False)
+        comp_results.to_csv("results/csv/predicciones_compuesto.csv", index=False)
 
         merged = compare_models(elo_results, comp_results)
-        merged.to_csv("results/comparacion_modelos.csv", index=False)
+        merged.to_csv("results/csv/comparacion_modelos.csv", index=False)
         mc_results = comp_results
 
     else:
@@ -187,9 +188,9 @@ def main():
             use_composite=args.composite,
             elo_weight=args.elo_weight,
         )
-        mc_results.to_csv("results/predicciones_campeon.csv", index=False)
+        mc_results.to_csv("results/csv/predicciones_campeon.csv", index=False)
 
-    print(f"\nResultados guardados en results/")
+    print(f"\nResultados guardados en results/csv/")
     print("\n=== TOP 10 CANDIDATOS AL TÍTULO ===")
     for _, row in mc_results.head(10).iterrows():
         bar = "█" * int(row["probability_pct"] * 2)
