@@ -149,7 +149,7 @@ results/
 |---------|------|
 | Partidos y Proyecciones (72 partidos) | https://docs.google.com/spreadsheets/d/11QDCdK48WzA5-FFGN6qU6ELMrMH7zcAsWj7CBJCn16g/edit |
 | Probabilidades de Campeonato (48 equipos) | https://docs.google.com/spreadsheets/d/1kmZyOijsDKZi9EwnPrBLlNAC0cNhwJhEtVLs-6pXCT0/edit |
-| Bracket Eliminatorio Proyectado | https://docs.google.com/spreadsheets/d/1a2EkbkNUPmVUjW4ZJdxdjvixUa-ZvdoMj4tERe8jJ6Y/edit |
+| Bracket Eliminatorio Proyectado | https://docs.google.com/spreadsheets/d/1yjlHZ95mK7r107TB1mZyn4Z6SBjbli6A8D9316P61CQ/edit |
 
 ---
 
