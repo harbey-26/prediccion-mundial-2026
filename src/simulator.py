@@ -139,12 +139,10 @@ def build_knockout_bracket(group_results: Dict[str, List[str]], ratings: Dict[st
         matchups.append((firsts[g1], seconds[g2]))
         matchups.append((firsts[g2], seconds[g1]))
 
-    # Completar con los 8 mejores terceros (vs primeros de los grupos restantes ponderado)
-    # Simplificado: se emparejan los 8 terceros contra los 4 mejores primeros del resto
-    extra_firsts = [firsts["C"], firsts["D"], firsts["G"], firsts["H"]]
-    for i, third in enumerate(thirds):
-        if i < len(extra_firsts):
-            matchups.append((extra_firsts[i], third))
+    # Los 8 mejores terceros se enfrentan entre sí (4 partidos)
+    # Evita duplicar equipos ya en el bracket de 12 partidos
+    for i in range(0, len(thirds) - 1, 2):
+        matchups.append((thirds[i], thirds[i + 1]))
 
     return matchups[:16]
 
