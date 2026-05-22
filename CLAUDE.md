@@ -2,17 +2,22 @@
 
 ## ¿Qué es este proyecto?
 
-Modelo de predicción del Mundial FIFA 2026 usando **ELO histórico + Ranking FIFA** con **simulación Monte Carlo** (100,000 torneos). Predice el ganador de cada partido, la clasificación por grupos y el campeón.
+Modelo de predicción del Mundial FIFA 2026 usando **ELO histórico v2 + Ranking FIFA + Ataque/Defensa + Forma Reciente + ML Ensemble (XGBoost)** con **simulación Monte Carlo** (100,000 torneos). Predice el ganador de cada partido, la clasificación por grupos y el campeón.
 
 ---
 
 ## Estado actual del proyecto
 
 - ✅ Dataset descargado: 49,257 partidos internacionales (1872–2026)
-- ✅ ELO ratings calculados para 336 selecciones (cacheados en `data/processed/elo_ratings.csv`)
+- ✅ ELO v2 calculado para 336 selecciones (cacheado en `data/processed/elo_ratings.csv`)
+- ✅ Calibración de empate: `a=0.2389, b=0.00158, c=0.0200` (cacheada en `data/processed/draw_calibration.json`)
 - ✅ Ranking FIFA scrapeado: 200 equipos (abril 2026, en `data/raw/fifa_ranking_2026.json`)
-- ✅ Simulaciones ejecutadas: 100,000 torneos × 2 modelos (ELO puro y ELO+FIFA)
-- ✅ Excel generado: `results/excel/Mundial_2026_Predicciones.xlsx` (5 hojas)
+- ✅ Ataque/Defensa: 229 equipos con ratings Dixon-Coles (últimos 4 años)
+- ✅ Forma reciente: 336 equipos con ajuste ELO ±80 pts (últimos 10 partidos)
+- ✅ Modelo ML (XGBoost): entrenado sobre 37,165 partidos, cacheado en `data/processed/ml_model.pkl`
+  - Accuracy validación (2021+): **60.6%** | Mejora log-loss vs baseline: **20.6%**
+- ✅ Simulaciones v3: 100,000 torneos × 2 modelos (ELO puro + Ensemble completo)
+- ✅ Excel generado: `results/excel/Mundial_2026_Predicciones.xlsx` (6 hojas)
 - ✅ Google Sheets publicados en Drive del usuario (harbey.26@gmail.com)
 - ✅ Repositorio en GitHub: https://github.com/harbey-26/prediccion-mundial-2026
 
@@ -20,44 +25,45 @@ Modelo de predicción del Mundial FIFA 2026 usando **ELO histórico + Ranking FI
 
 ## Entorno
 
-```bash
-# Siempre activar el entorno virtual antes de correr cualquier script
-cd /home/ubuntu/proyectos/prediccion-mundial-2026
-source venv/bin/activate
-```
-
-- Python 3.14 con virtualenv en `venv/`
-- Dependencias: pandas, numpy, scikit-learn, matplotlib, seaborn, openpyxl, beautifulsoup4, lxml, tqdm
+- Python 3 (sistema, sin virtualenv)
+- Directorio: `/Users/familiaperdomobocachica2/Documents/Proyectos_APP/prediccion-mundial-2026`
+- Dependencias: pandas, numpy, scipy, scikit-learn, xgboost, matplotlib, seaborn, openpyxl, beautifulsoup4, lxml, tqdm
 
 ---
 
 ## Comandos clave
 
 ```bash
-# Simulación completa con modelo compuesto (ELO + FIFA) — recomendado
-python main.py --composite --sims 100000
+# Simulación completa recomendada (ELO + FIFA + A/D + Forma + ML)
+python3 main.py --composite --compare --sims 100000 --no-plot
 
-# Comparar ambos modelos y guardar diferencias
-python main.py --compare --sims 100000
+# Entrenar/re-entrenar el modelo ML y correr simulaciones
+python3 main.py --train-ml --composite --compare --sims 100000 --no-plot
+
+# Solo modelo ELO + FIFA + Features (sin ML, más rápido)
+python3 main.py --composite --compare --no-ml --sims 100000 --no-plot
 
 # Predecir un partido específico
-python main.py --match "Brazil" "Argentina"
+python3 main.py --match "Brazil" "Argentina"
 
-# Regenerar el Excel con las 5 hojas
-python generate_excel.py
+# Regenerar el Excel (6 hojas)
+python3 generate_excel.py
 
 # Recalcular ELO desde cero (si hay nuevos datos)
-python main.py --recalc
+python3 main.py --recalc --calibrate --composite --compare --sims 100000
 ```
 
 ---
 
-## Arquitectura del modelo
+## Arquitectura del modelo v3
 
-### 1. ELO Histórico (`src/elo_calculator.py`)
+### 1. ELO Histórico v2 (`src/elo_calculator.py`)
 - Rating inicial: 1500 para todos
-- K-factor: 20 × peso del torneo
-- Pesos por torneo: Mundial FIFA (2.0), Eurocopa (1.8), Copa América (1.5), Amistoso (0.5)
+- K-factor dinámico: 20 × peso_torneo × goal_multiplier × time_decay × uncertainty_mult
+- Pesos por torneo: Mundial FIFA (2.0), Eurocopa (1.8), Copa América/Africana (1.5), Clasif. (1.3), Amistoso (0.5)
+- Goal multiplier: 1-0 → ×1.0 | 2-0 → ×1.5 | 3-0+ → ×(11+gd)/8
+- Time decay: exp(-0.05 × años_atrás) — partidos de hace 15 años valen ~45% menos
+- Uncertainty multiplier: <30 partidos → ×1.5 | 30–80 → ×1.2 | 80+ → ×1.0
 - Ventaja de local: +30 puntos ELO (no aplica en campo neutral)
 
 ### 2. Ranking FIFA (`src/fifa_ranking.py`)
@@ -70,18 +76,37 @@ python main.py --recalc
 composite = 0.6 * elo + 0.4 * fifa_points  # ajustable con --elo-weight
 ```
 
-### 4. Probabilidades de partido (`src/elo_calculator.py::win_probability`)
+### 4. Probabilidad de empate (`src/calibration.py`)
+Calibrada empíricamente con `scipy.optimize.curve_fit` sobre el historial completo:
 ```python
-p_draw = max(0.10, 0.28 - 0.001 * abs(elo_diff))
-p_win  = p_win_raw * (1 - p_draw)
-p_loss = (1 - p_win_raw) * (1 - p_draw)
+P(draw) = 0.2389 * exp(-0.00158 * |elo_diff|) + 0.0200
+# Clamped to [0.05, 0.40]
 ```
 
-### 5. Simulación Monte Carlo (`src/simulator.py`)
-- Fase de grupos: round-robin con marcadores Poisson
+### 5. Ataque/Defensa (`src/attack_defense.py`)
+- Dixon-Coles simplificado sobre los últimos 4 años (pesos exp λ=0.4/año)
+- `attack > 1.0` = ataque fuerte | `defense < 1.0` = defensa sólida
+- Goles esperados: `λ_A = 1.35 × attack_A × defense_B`
+- Usado en fase de grupos para marcadores Poisson (no afecta probabilidad de resultado)
+
+### 6. Forma Reciente (`src/form.py`)
+- Ajuste ELO ±80 pts basado en últimos 10 partidos (pesos exponenciales λ=0.15)
+- Normalización solo sobre equipos con ≥6 partidos en los últimos 2 años
+- Equipos en mejor forma actual: Alemania, Francia, Argentina (~+80 pts)
+
+### 7. Modelo ML Ensemble (`src/ml_model.py`) ← NUEVO en v3
+- XGBClassifier multiclase (0=visitante gana, 1=empate, 2=local gana)
+- 15 features: elo_diff_adj, elo_home/away, form_home/away, form_diff, attack/defense x4, goal_ratio, home_advantage, tournament_weight, gp_log x2
+- Train: 31,629 partidos (1980–2020) | Val: 5,536 partidos (2021–2026)
+- Accuracy val: **60.6%** | Log-loss: 0.8727 (baseline uniforme: 1.0986 → **mejora 20.6%**)
+- Pre-calcula 2,256 pares antes de simular → mantiene ~560 torneos/segundo
+- Blend: `p_final = 0.65 × p_elo + 0.35 × p_ml`
+
+### 8. Simulación Monte Carlo (`src/simulator.py`)
+- Fase de grupos: round-robin, resultado vía ELO+ML blend, goles vía Poisson Dixon-Coles
 - Clasifican: top-2 de cada grupo + 8 mejores terceros = 32 equipos
-- Fase eliminatoria: R32 → Octavos → QF → SF → Final
-- En eliminatorias: no hay empate (penalty shootout aleatorio por ELO)
+- Criterio terceros: puntos → GD → GF → ELO (regla FIFA oficial)
+- Fase eliminatoria: R32 → R16 → QF → SF → Final (sin empate)
 
 ---
 
@@ -104,27 +129,34 @@ p_loss = (1 - p_win_raw) * (1 - p_draw)
 
 ---
 
-## Resultados de las simulaciones (100,000 torneos)
+## Resultados v3 — Modelo Ensemble (100,000 torneos)
 
-### Top 10 — Modelo ELO + FIFA (recomendado)
+### Top 15 — ELO puro vs Ensemble completo (ELO + FIFA + A/D + Forma + ML)
 
-| # | Selección | ELO solo | ELO+FIFA |
-|---|-----------|:--------:|:--------:|
-| 1 | España | 31.3% | **31.2%** |
-| 2 | Argentina | 10.6% | **11.5%** |
-| 3 | Francia | 8.8% | **10.4%** |
-| 4 | Brasil | 5.5% | **6.5%** |
-| 5 | Inglaterra | 5.5% | **6.3%** |
-| 6 | Marruecos | 4.4% | **5.5%** |
-| 7 | Países Bajos | 2.9% | **3.5%** |
-| 8 | Alemania | 3.1% | **3.0%** |
-| 9 | Portugal | 2.4% | **2.6%** |
-| 10 | Bélgica | 1.6% | **2.6%** |
+| # | Selección | ELO puro | **Ensemble** | Δ |
+|---|-----------|:--------:|:------------:|:-:|
+| 1 | España | 22.9% | **23.2%** | ↑0.3% |
+| 2 | Argentina | 11.7% | **14.7%** | ↑3.0% |
+| 3 | Francia | 11.0% | **14.2%** | ↑3.2% |
+| 4 | Marruecos | 8.5% | **8.5%** | →0.0% |
+| 5 | Inglaterra | 7.0% | **7.4%** | ↑0.4% |
+| 6 | Japón | 7.5% | **4.3%** | ↓3.2% |
+| 7 | Países Bajos | 3.1% | **4.3%** | ↑1.2% |
+| 8 | Alemania | 3.3% | **3.1%** | ↓0.2% |
+| 9 | Brasil | 2.0% | **3.0%** | ↑1.0% |
+| 10 | Portugal | 1.9% | **2.4%** | ↑0.5% |
+| 11 | Senegal | 2.3% | **1.9%** | ↓0.4% |
+| 12 | Croacia | 1.8% | **1.7%** | ↓0.1% |
+| 13 | Bélgica | 1.1% | **1.7%** | ↑0.6% |
+| 14 | México | 1.1% | **1.5%** | ↑0.4% |
+| 15 | Australia | 2.6% | **1.1%** | ↓1.5% |
+
+> El ML penaliza a Japón (-3.2%) y Australia (-1.5%) que tienen buen ELO reciente pero historial débil en eliminatorias de alto nivel. Favorece a Argentina (+3.0%) y Francia (+3.2%) por su rendimiento histórico ajustado por calidad de rival.
 
 ### Bracket proyectado (ganador más probable en cada partido)
-- **Final:** España vs Argentina → **España** (39% vs 35%)
-- **Semifinal 1:** Brasil vs España → España
-- **Semifinal 2:** Argentina vs Noruega → Argentina
+- **Final:** España vs Argentina → **España**
+- **Semifinal 1:** Francia vs España → España
+- **Semifinal 2:** Argentina vs Marruecos → Argentina
 
 ---
 
@@ -133,12 +165,16 @@ p_loss = (1 - p_win_raw) * (1 - p_draw)
 ```
 results/
 ├── csv/
-│   ├── predicciones_elo.csv          # Modelo ELO puro
-│   ├── predicciones_compuesto.csv    # Modelo ELO + FIFA ← usar este
-│   ├── predicciones_campeon.csv      # Última simulación ejecutada
+│   ├── predicciones_elo.csv          # Modelo ELO puro (100k sims)
+│   ├── predicciones_compuesto.csv    # Modelo Ensemble v3 ← usar este
 │   └── comparacion_modelos.csv       # Diferencias entre modelos
 └── excel/
-    └── Mundial_2026_Predicciones.xlsx  # 5 hojas (descargar desde GitHub)
+    └── Mundial_2026_Predicciones.xlsx  # 6 hojas (ELO + FIFA + ML)
+
+data/processed/
+├── elo_ratings.csv       # ELO v2 de 336 selecciones
+├── draw_calibration.json # Parámetros P(empate) calibrados
+└── ml_model.pkl          # XGBoost entrenado (37k partidos, 60.6% acc)
 ```
 
 ---
@@ -151,17 +187,19 @@ results/
 | Probabilidades de Campeonato (48 equipos) | https://docs.google.com/spreadsheets/d/1kmZyOijsDKZi9EwnPrBLlNAC0cNhwJhEtVLs-6pXCT0/edit |
 | Bracket Eliminatorio Proyectado | https://docs.google.com/spreadsheets/d/1yjlHZ95mK7r107TB1mZyn4Z6SBjbli6A8D9316P61CQ/edit |
 
+> Nota: los Google Sheets reflejan resultados de una versión anterior. El Excel local tiene los resultados v3 actualizados.
+
 ---
 
 ## Ideas para continuar
 
 - [ ] **Actualizar con resultados reales**: a medida que se jueguen partidos, alimentar los resultados al modelo y recalcular ELO en tiempo real
 - [ ] **Agregar ranking FIFA actualizado**: el ranking se actualiza mensualmente, re-scrapear antes de cada fecha
-- [ ] **Feature: historial H2H**: agregar estadísticas de enfrentamientos directos entre selecciones
-- [ ] **Feature: goles esperados (xG)**: usar xG en lugar de goles reales para el ELO
-- [ ] **Dashboard web**: exponer las predicciones en una app React (similar al stack de app-control-de-compras)
+- [ ] **Feature H2H**: estadísticas de enfrentamientos directos entre selecciones
+- [ ] **Feature xG**: usar expected goals en lugar de goles reales para el ELO
+- [ ] **Dashboard web**: exponer predicciones en app React
 - [ ] **Actualizar grupos reales**: si el draw oficial cambia, editar `src/world_cup_2026.py`
-- [ ] **Predicción de marcadores**: agregar distribución de Poisson para predecir el marcador exacto más probable
+- [ ] **Calibrar ml_weight**: optimizar el peso del ML ensemble (actualmente 0.35) vía backtesting
 
 ---
 
@@ -177,4 +215,4 @@ results/
 
 - **GitHub**: https://github.com/harbey-26/prediccion-mundial-2026
 - **Rama principal**: `main`
-- **Último commit**: bracket fix + Google Sheets + README con links
+- **Último commit**: feat: agregar modelo ML ensemble XGBoost (Fase 4)

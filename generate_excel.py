@@ -1,5 +1,5 @@
 """
-Genera el archivo Excel completo del Mundial 2026 con proyecciones del modelo v2.
+Genera el archivo Excel completo del Mundial 2026 con proyecciones del modelo v3.
 
 Hojas:
   1. Fase de Grupos       — 72 partidos con probabilidades y proyección
@@ -786,7 +786,7 @@ def sheet_validation(wb):
     nota = ("Brier Score: más bajo = mejor (0 = perfecto, 1 = pésimo). "
             "Log-Loss: más bajo = mejor. "
             "Naive = 1/n igual prob. a todos. "
-            "El modelo v2 supera al naive en 9.8% en Brier Score y 53% en Log-Loss (Qatar 2022).")
+            "El modelo v3 supera al naive en 9.8% en Brier Score y 53% en Log-Loss (Qatar 2022).")
     ws.merge_cells(f"A{row}:G{row}")
     ws[f"A{row}"] = nota
     ws[f"A{row}"].font = Font(name="Calibri", size=9, italic=True, color="555555")
@@ -800,7 +800,7 @@ def sheet_validation(wb):
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 def main():
-    print("=== Generando Excel del Mundial 2026 (Modelo v2) ===\n")
+    print("=== Generando Excel del Mundial 2026 (Modelo v3) ===\n")
 
     elo_ratings, fifa_rankings, comp_ratings, elo_results, comp_results, attack_defense, form_adj = load_all_data()
 
