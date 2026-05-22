@@ -25,9 +25,10 @@ from src.elo_calculator import compute_elo_ratings, win_probability, set_draw_pa
 from src.calibration import load_calibration, run_calibration, print_calibration_summary
 from src.fifa_ranking import load_fifa_rankings, composite_rating, get_fifa_points
 from src.attack_defense import compute_attack_defense
-from src.form import compute_form
+from src.form import compute_form, compute_form_raw
 from src.simulator import run_monte_carlo, simulate_group_stage, build_composite_ratings
 from src.visualizer import plot_championship_probabilities, plot_elo_top_teams, plot_group_stage_summary
+from src.ml_model import train_model, save_model, load_model
 
 
 def build_elo_ratings(force: bool = False) -> dict:
@@ -159,6 +160,12 @@ def main():
                         help="Ejecutar backtesting sobre Mundiales 2018 y 2022")
     parser.add_argument("--backtest-sims", type=int, default=50_000,
                         help="Simulaciones para backtesting (default: 50,000)")
+    parser.add_argument("--train-ml", action="store_true",
+                        help="Entrenar modelo XGBoost y guardar en caché")
+    parser.add_argument("--ml-weight", type=float, default=0.35, dest="ml_weight",
+                        help="Peso del modelo ML en el ensemble (0.0–1.0, default: 0.35)")
+    parser.add_argument("--no-ml", action="store_true",
+                        help="Desactivar modelo ML aunque exista caché")
     args = parser.parse_args()
 
     # 1. Datos
@@ -199,6 +206,8 @@ def main():
     # 5. Features adicionales: ataque/defensa + forma reciente
     attack_defense = None
     form_adj = None
+    form_raw = None
+    df_full = None
     if not args.no_features:
         print("\nCalculando ratings de ataque/defensa (últimos 4 años)...")
         df_full = load_results()
@@ -207,17 +216,34 @@ def main():
 
         print("Calculando factor de forma reciente (últimos 10 partidos)...")
         form_adj = compute_form(df_full)
+        form_raw = compute_form_raw(df_full)
         print(f"  {len(form_adj)} equipos con forma calculada.")
 
-    # 6. Partido específico
+    # 6. Modelo ML ensemble
+    ml_model = None
+    if not args.no_ml:
+        if args.train_ml:
+            print("\n=== ENTRENANDO MODELO ML (XGBoost) ===")
+            if df_full is None:
+                df_full = load_results()
+            ml_model = train_model(df_full)
+            save_model(ml_model)
+        else:
+            ml_model = load_model()
+            if ml_model is not None:
+                print(f"Modelo ML cargado desde caché (peso={args.ml_weight:.0%}).")
+            else:
+                print("Sin modelo ML en caché. Usa --train-ml para entrenar.")
+
+    # 7. Partido específico
     if args.match:
         predict_match(args.match[0], args.match[1], elo_ratings, fifa_rankings)
         return
 
-    # 7. Tabla comparativa de ratings para los 48 equipos
+    # 8. Tabla comparativa de ratings para los 48 equipos
     print_top_ratings(elo_ratings, fifa_rankings, n=20)
 
-    # 8. Fase de grupos (muestra)
+    # 9. Fase de grupos (muestra)
     use_composite = args.composite or args.compare
     effective_ratings = (
         build_composite_ratings(elo_ratings, args.elo_weight)
@@ -229,7 +255,7 @@ def main():
         elo_str = " | ".join([f"{t} ({effective_ratings.get(t, 1500):.0f})" for t in teams])
         print(f"  Grupo {group}: {elo_str}")
 
-    # 9. Monte Carlo
+    # 10. Monte Carlo
     os.makedirs("results/csv", exist_ok=True)
     os.makedirs("results/excel", exist_ok=True)
 
@@ -241,10 +267,12 @@ def main():
         )
         elo_results.to_csv("results/csv/predicciones_elo.csv", index=False)
 
-        print(f"\n=== MODELO ELO + FIFA + Features ({args.sims:,} simulaciones) ===")
+        label_comp = "ELO + FIFA + Features" + (" + ML" if ml_model else "")
+        print(f"\n=== MODELO {label_comp} ({args.sims:,} simulaciones) ===")
         comp_results = run_monte_carlo(
             elo_ratings, args.sims, use_composite=True, elo_weight=args.elo_weight,
             attack_defense=attack_defense, form_adj=form_adj,
+            ml_model=ml_model, ml_weight=args.ml_weight, form_raw=form_raw,
         )
         comp_results.to_csv("results/csv/predicciones_compuesto.csv", index=False)
 
@@ -254,6 +282,8 @@ def main():
 
     else:
         label = "ELO + FIFA + Features" if args.composite else "ELO puro"
+        if ml_model and args.composite:
+            label += " + ML"
         print(f"\n=== SIMULACIÓN MONTE CARLO — {label} ({args.sims:,} torneos) ===")
         mc_results = run_monte_carlo(
             elo_ratings, args.sims,
@@ -261,6 +291,9 @@ def main():
             elo_weight=args.elo_weight,
             attack_defense=attack_defense,
             form_adj=form_adj,
+            ml_model=ml_model if args.composite else None,
+            ml_weight=args.ml_weight,
+            form_raw=form_raw,
         )
         mc_results.to_csv("results/csv/predicciones_campeon.csv", index=False)
 
@@ -270,7 +303,7 @@ def main():
         bar = "█" * int(row["probability_pct"] * 2)
         print(f"  {int(row['rank']):>2}. {row['team']:<25} {row['probability_pct']:>5.1f}%  {bar}")
 
-    # 8. Visualizaciones
+    # 11. Visualizaciones
     if not args.no_plot:
         plot_elo_top_teams(effective_ratings, top_n=25)
         plot_championship_probabilities(mc_results, top_n=20)

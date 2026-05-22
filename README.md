@@ -14,24 +14,24 @@ Modelo de predicción basado en **ELO histórico v2** + **Ranking FIFA** + **Rat
 
 ---
 
-## Resultados del Modelo v2 (100,000 simulaciones)
+## Resultados del Modelo v3 (100,000 simulaciones)
 
-### Top 10 candidatos al título — Modelo ELO + FIFA + Ataque/Defensa + Forma
+### Top 10 candidatos al título — Modelo Ensemble (ELO + FIFA + A/D + Forma + ML)
 
-| # | Selección | Prob. ELO puro | Prob. Modelo completo | Δ FIFA+Features |
-|---|-----------|:--------------:|:---------------------:|:---------------:|
-| 🥇 | **España** | 22.7% | **22.6%** | →0.1% |
-| 🥈 | **Argentina** | 11.8% | **13.9%** | ↑2.1% |
-| 🥉 | **Francia** | 11.3% | **13.5%** | ↑2.2% |
-| 4 | Marruecos | 8.6% | **8.1%** | ↓0.6% |
-| 5 | Inglaterra | 7.0% | **7.8%** | ↑0.8% |
-| 6 | Países Bajos | 3.1% | **4.1%** | ↑1.0% |
-| 7 | Japón | 7.4% | **4.0%** | ↓3.5% |
-| 8 | Alemania | 3.3% | **3.8%** | →0.5% |
-| 9 | Brasil | 2.0% | **2.9%** | ↑0.9% |
-| 10 | Portugal | 1.9% | **2.6%** | ↑0.7% |
+| # | Selección | Prob. ELO puro | Prob. Ensemble | Δ |
+|---|-----------|:--------------:|:--------------:|:-:|
+| 🥇 | **España** | 22.9% | **23.2%** | ↑0.3% |
+| 🥈 | **Argentina** | 11.7% | **14.7%** | ↑3.0% |
+| 🥉 | **Francia** | 11.0% | **14.2%** | ↑3.2% |
+| 4 | Marruecos | 8.5% | **8.5%** | →0.0% |
+| 5 | Inglaterra | 7.0% | **7.4%** | ↑0.4% |
+| 6 | Países Bajos | 3.1% | **4.3%** | ↑1.2% |
+| 7 | Japón | 7.5% | **4.3%** | ↓3.2% |
+| 8 | Alemania | 3.3% | **3.1%** | ↓0.2% |
+| 9 | Brasil | 2.0% | **3.0%** | ↑1.0% |
+| 10 | Portugal | 1.9% | **2.4%** | ↑0.5% |
 
-> **Lectura:** El ranking FIFA favorece a Argentina (+2.1%) y Francia (+2.2%), que tienen mejor posición oficial que la que reflejan sus resultados históricos. Japón baja significativamente (-3.5%) porque su FIFA ranking no respalda su ELO reciente.
+> **Lectura:** El modelo ML ensemble (XGBoost, 60.6% accuracy) refuerza el favoritismo de Argentina (+3.0%) y Francia (+3.2%) sobre el ELO puro. Japón baja (-3.2%) porque el modelo ML penaliza su debilidad histórica en eliminatorias de alto nivel. España se mantiene como máxima favorita.
 
 ### Validación del modelo — Backtesting Mundiales 2018 y 2022
 
@@ -45,9 +45,9 @@ El modelo **supera al baseline equiprobable** en ambos torneos: +20.6% mejor Bri
 
 ---
 
-## Descripción del Modelo v2
+## Descripción del Modelo v3
 
-El modelo combina cuatro fuentes de información para cada selección:
+El modelo combina cinco fuentes de información para cada selección:
 
 | Componente | Peso | Descripción |
 |-----------|:----:|-------------|
@@ -55,6 +55,7 @@ El modelo combina cuatro fuentes de información para cada selección:
 | **Ranking FIFA** | 40% | Puntos FIFA scrapeados de Transfermarkt (200 selecciones, abril 2026). |
 | **Ataque/Defensa** | — | Ratings separados por equipo (metodología Dixon-Coles, últimos 4 años). Determina los goles esperados vía distribución Poisson: `λ = avg_global × ataque_A × defensa_B`. |
 | **Forma Reciente** | — | Ajuste ELO de ±80 pts basado en los últimos 10 partidos (pesos exponenciales). Alemania, Francia y Argentina son los equipos en mejor forma actualmente. |
+| **ML Ensemble** | 35% | XGBClassifier entrenado sobre 37,165 partidos (1980–2026) con 15 features. Accuracy validación: **60.6%**. Log-loss **20.6% mejor** que baseline uniforme. Se blend con ELO: `p_final = 0.65 × p_elo + 0.35 × p_ml`. |
 
 La **probabilidad de empate** se calibra empíricamente con `scipy.optimize.curve_fit` sobre el historial completo: `P(empate) = 0.239 × exp(-0.00158 × |diff_ELO|) + 0.020`.
 
@@ -151,6 +152,9 @@ Genera `results/excel/Mundial_2026_Predicciones.xlsx` con **6 hojas** detalladas
 | `--backtest` | Backtesting sobre Mundiales 2018 y 2022 | `False` |
 | `--backtest-sims N` | Simulaciones para backtesting | `50000` |
 | `--no-features` | Desactivar ataque/defensa y forma (modo básico) | `False` |
+| `--train-ml` | Entrenar modelo XGBoost y guardar en caché | `False` |
+| `--ml-weight X` | Peso del modelo ML en el blend (0.0–1.0) | `0.35` |
+| `--no-ml` | Desactivar modelo ML aunque exista caché | `False` |
 | `--download` | Forzar re-descarga del dataset | `False` |
 | `--no-plot` | No generar gráficos | `False` |
 

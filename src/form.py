@@ -97,6 +97,39 @@ def compute_form(df: pd.DataFrame, n_matches: int = N_MATCHES) -> Dict[str, floa
     return form_adj
 
 
+def compute_form_raw(df: pd.DataFrame, n_matches: int = N_MATCHES) -> Dict[str, float]:
+    """
+    Retorna raw weighted form scores en escala 0–3 (sin normalizar).
+    Usado como feature para el modelo ML — compatible con build_feature_matrix.
+    """
+    df_sorted = df.sort_values("date", ascending=False)
+    all_teams = set(df["home_team"]) | set(df["away_team"])
+    raw: Dict[str, float] = {}
+
+    for team in all_teams:
+        mask = (df_sorted["home_team"] == team) | (df_sorted["away_team"] == team)
+        recent = df_sorted[mask].head(n_matches)
+
+        if len(recent) == 0:
+            raw[team] = 1.0
+            continue
+
+        total_pts = total_w = 0.0
+        for i, (_, row) in enumerate(recent.iterrows()):
+            w = np.exp(-0.15 * i)
+            if row["home_team"] == team:
+                scored, conceded = row["home_score"], row["away_score"]
+            else:
+                scored, conceded = row["away_score"], row["home_score"]
+            pts = 3.0 if scored > conceded else (1.0 if scored == conceded else 0.0)
+            total_pts += pts * w
+            total_w += w
+
+        raw[team] = total_pts / total_w if total_w > 0 else 1.0
+
+    return raw
+
+
 def apply_form(
     ratings: Dict[str, float],
     form_adj: Dict[str, float],

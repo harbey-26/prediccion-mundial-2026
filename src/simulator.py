@@ -29,12 +29,36 @@ def simulate_match(
     neutral: bool = True,
     allow_draw: bool = True,
     form_adj: Optional[Dict[str, float]] = None,
+    ml_model=None,
+    ml_weight: float = 0.35,
+    form_raw: Optional[Dict[str, float]] = None,
+    attack_defense: Optional[Dict[str, Dict[str, float]]] = None,
+    ml_cache: Optional[Dict] = None,
 ) -> str:
-    """Simula un partido y retorna el ganador (o 'draw')."""
+    """Simula un partido y retorna el ganador (o 'draw').
+
+    ml_cache: dict pre-calculado {(ta, tb): (p_win, p_draw, p_loss)} —
+              evita llamar predict_proba en cada simulación (mucho más rápido).
+    """
     elo_a = ratings.get(team_a, 1500) + (form_adj.get(team_a, 0.0) if form_adj else 0.0)
     elo_b = ratings.get(team_b, 1500) + (form_adj.get(team_b, 0.0) if form_adj else 0.0)
 
     p_win, p_draw, p_loss = win_probability(elo_a, elo_b, neutral=neutral)
+
+    # Blend con modelo ML (usa caché pre-calculada si está disponible)
+    if ml_cache is not None and (team_a, team_b) in ml_cache:
+        ml_win, ml_draw, ml_loss = ml_cache[(team_a, team_b)]
+        p_win = (1 - ml_weight) * p_win + ml_weight * ml_win
+        p_draw = (1 - ml_weight) * p_draw + ml_weight * ml_draw
+        p_loss = (1 - ml_weight) * p_loss + ml_weight * ml_loss
+    elif ml_model is not None and form_raw is not None:
+        from .ml_model import predict_match_ml
+        ml_win, ml_draw, ml_loss = predict_match_ml(
+            team_a, team_b, ratings, form_raw, attack_defense, ml_model, neutral
+        )
+        p_win = (1 - ml_weight) * p_win + ml_weight * ml_win
+        p_draw = (1 - ml_weight) * p_draw + ml_weight * ml_draw
+        p_loss = (1 - ml_weight) * p_loss + ml_weight * ml_loss
 
     if not allow_draw:
         total = p_win + p_loss
@@ -56,6 +80,10 @@ def simulate_group_stage(
     ratings: Dict[str, float],
     attack_defense: Optional[Dict[str, Dict[str, float]]] = None,
     form_adj: Optional[Dict[str, float]] = None,
+    ml_model=None,
+    ml_weight: float = 0.35,
+    form_raw: Optional[Dict[str, float]] = None,
+    ml_cache: Optional[Dict] = None,
 ) -> Tuple[Dict[str, List[str]], Dict[str, Dict]]:
     """
     Simula la fase de grupos.
@@ -82,18 +110,20 @@ def simulate_group_stage(
         ]
 
         for team_a, team_b in matches:
-            elo_a = ratings.get(team_a, 1500) + (form_adj.get(team_a, 0.0) if form_adj else 0.0)
-            elo_b = ratings.get(team_b, 1500) + (form_adj.get(team_b, 0.0) if form_adj else 0.0)
-
-            p_win, p_draw, p_loss = win_probability(elo_a, elo_b, neutral=True)
-            probs = np.array([p_win, p_draw, p_loss])
-            probs /= probs.sum()
-            outcome = np.random.choice(["win", "draw", "loss"], p=probs)
+            # Resultado via simulate_match (incluye ML blend si está activo)
+            result = simulate_match(
+                team_a, team_b, ratings, neutral=True, allow_draw=True,
+                form_adj=form_adj, ml_model=ml_model, ml_weight=ml_weight,
+                form_raw=form_raw, attack_defense=attack_defense, ml_cache=ml_cache,
+            )
+            outcome = "win" if result == team_a else ("draw" if result == "draw" else "loss")
 
             # Lambdas Poisson: Dixon-Coles si hay datos, fallback a ELO
             if attack_defense:
                 lambda_a, lambda_b = expected_goals(team_a, team_b, attack_defense)
             else:
+                elo_a = ratings.get(team_a, 1500) + (form_adj.get(team_a, 0.0) if form_adj else 0.0)
+                elo_b = ratings.get(team_b, 1500) + (form_adj.get(team_b, 0.0) if form_adj else 0.0)
                 lambda_a = max(0.3, 1.2 + (elo_a - elo_b) / 800)
                 lambda_b = max(0.3, 1.2 + (elo_b - elo_a) / 800)
 
@@ -207,10 +237,19 @@ def simulate_knockout_round(
     teams: List[Tuple[str, str]],
     ratings: Dict[str, float],
     form_adj: Optional[Dict[str, float]] = None,
+    ml_model=None,
+    ml_weight: float = 0.35,
+    form_raw: Optional[Dict[str, float]] = None,
+    attack_defense: Optional[Dict[str, Dict[str, float]]] = None,
+    ml_cache: Optional[Dict] = None,
 ) -> List[str]:
     """Simula una ronda eliminatoria (sin empates). Retorna ganadores."""
     return [
-        simulate_match(a, b, ratings, neutral=True, allow_draw=False, form_adj=form_adj)
+        simulate_match(
+            a, b, ratings, neutral=True, allow_draw=False, form_adj=form_adj,
+            ml_model=ml_model, ml_weight=ml_weight, form_raw=form_raw,
+            attack_defense=attack_defense, ml_cache=ml_cache,
+        )
         for a, b in teams
     ]
 
@@ -219,25 +258,39 @@ def simulate_tournament(
     ratings: Dict[str, float],
     attack_defense: Optional[Dict[str, Dict[str, float]]] = None,
     form_adj: Optional[Dict[str, float]] = None,
+    ml_model=None,
+    ml_weight: float = 0.35,
+    form_raw: Optional[Dict[str, float]] = None,
+    ml_cache: Optional[Dict] = None,
 ) -> str:
     """
     Simula un torneo completo y retorna el campeón.
     Soporta formato 32 equipos (8 grupos, 2018/2022) y 48 equipos (12 grupos, 2026).
     """
     # Fase de grupos
-    group_results, group_tables = simulate_group_stage(ratings, attack_defense, form_adj)
+    group_results, group_tables = simulate_group_stage(
+        ratings, attack_defense, form_adj, ml_model, ml_weight, form_raw, ml_cache
+    )
 
     # Primera ronda eliminatoria (R32 en 2026, R16 en 2018/2022)
     initial_pairs = build_knockout_bracket(group_results, group_tables, ratings)
-    next_round = simulate_knockout_round(initial_pairs, ratings, form_adj)
+    next_round = simulate_knockout_round(
+        initial_pairs, ratings, form_adj, ml_model, ml_weight, form_raw, attack_defense, ml_cache
+    )
 
     # Rondas siguientes hasta que queden 2 finalistas
     while len(next_round) > 2:
         pairs = list(zip(next_round[::2], next_round[1::2]))
-        next_round = simulate_knockout_round(pairs, ratings, form_adj)
+        next_round = simulate_knockout_round(
+            pairs, ratings, form_adj, ml_model, ml_weight, form_raw, attack_defense, ml_cache
+        )
 
     # Final
-    return simulate_match(next_round[0], next_round[1], ratings, neutral=True, allow_draw=False, form_adj=form_adj)
+    return simulate_match(
+        next_round[0], next_round[1], ratings, neutral=True, allow_draw=False,
+        form_adj=form_adj, ml_model=ml_model, ml_weight=ml_weight,
+        form_raw=form_raw, attack_defense=attack_defense, ml_cache=ml_cache,
+    )
 
 
 def build_composite_ratings(
@@ -260,6 +313,9 @@ def run_monte_carlo(
     elo_weight: float = 0.6,
     attack_defense: Optional[Dict[str, Dict[str, float]]] = None,
     form_adj: Optional[Dict[str, float]] = None,
+    ml_model=None,
+    ml_weight: float = 0.35,
+    form_raw: Optional[Dict[str, float]] = None,
 ) -> pd.DataFrame:
     """
     Ejecuta N simulaciones completas del Mundial 2026.
@@ -271,6 +327,9 @@ def run_monte_carlo(
         elo_weight: peso del ELO en el rating compuesto (0.0–1.0)
         attack_defense: ratings separados de ataque/defensa (Dixon-Coles)
         form_adj: ajuste ELO por forma reciente por equipo
+        ml_model: modelo XGBoost entrenado (opcional)
+        ml_weight: peso del modelo ML en el blend (0.0–1.0)
+        form_raw: form scores sin normalizar para features ML
     """
     if use_composite:
         print(f"  Rating compuesto (ELO {elo_weight:.0%} + FIFA {1-elo_weight:.0%})")
@@ -283,13 +342,31 @@ def run_monte_carlo(
         features.append("ataque/defensa")
     if form_adj:
         features.append("forma reciente")
+    if ml_model is not None:
+        features.append(f"ML ensemble (α={ml_weight:.0%})")
     if features:
         print(f"  Variables adicionales: {', '.join(features)}")
+
+    # Pre-calcular probabilidades ML para todos los pares (evita O(n_sims × n_matches) inferencias)
+    ml_cache: Optional[Dict] = None
+    if ml_model is not None and form_raw is not None:
+        from .ml_model import precompute_ml_probs
+        from . import world_cup_2026
+        all_teams = [t for teams in world_cup_2026.GROUPS.values() for t in teams]
+        print("  Pre-calculando probabilidades ML para los 48 equipos...")
+        ml_cache = precompute_ml_probs(
+            all_teams, effective_ratings, form_raw, attack_defense, ml_model, neutral=True
+        )
+        print(f"  Cache ML: {len(ml_cache):,} pares pre-computados.")
 
     champion_counts: Dict[str, int] = {}
 
     for _ in tqdm(range(n_simulations), desc="Simulando torneos"):
-        champion = simulate_tournament(effective_ratings, attack_defense, form_adj)
+        champion = simulate_tournament(
+            effective_ratings, attack_defense, form_adj,
+            ml_model=None, ml_weight=ml_weight, form_raw=None,
+            ml_cache=ml_cache,
+        )
         champion_counts[champion] = champion_counts.get(champion, 0) + 1
 
     results = pd.DataFrame([
