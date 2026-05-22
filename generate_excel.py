@@ -1,5 +1,5 @@
 """
-Genera el archivo Excel completo del Mundial 2026 con proyecciones del modelo.
+Genera el archivo Excel completo del Mundial 2026 con proyecciones del modelo v2.
 
 Hojas:
   1. Fase de Grupos       — 72 partidos con probabilidades y proyección
@@ -7,6 +7,7 @@ Hojas:
   3. Fase Eliminatoria    — bracket completo R32 → Final con proyecciones
   4. Prob. Campeonato     — ranking de probabilidad de título (ambos modelos)
   5. Ratings              — ELO, FIFA y compuesto para los 48 equipos
+  6. Validación Modelo    — backtesting 2018/2022 con Brier Score y Log-Loss
 """
 import os, sys
 import pandas as pd
@@ -20,9 +21,12 @@ from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 from openpyxl.chart import BarChart, Reference
 
 sys.path.insert(0, os.path.dirname(__file__))
-from src.elo_calculator import win_probability
+from src.elo_calculator import win_probability, set_draw_params
+from src.calibration import load_calibration
 from src.fifa_ranking import load_fifa_rankings, composite_rating, get_fifa_points
-from src.simulator import simulate_group_stage, build_composite_ratings, get_third_place_qualifiers
+from src.attack_defense import compute_attack_defense
+from src.form import compute_form
+from src.simulator import simulate_group_stage, build_composite_ratings
 from src.world_cup_2026 import GROUPS
 
 # ─── Paleta de colores ────────────────────────────────────────────────────────
@@ -98,11 +102,23 @@ def load_all_data():
     print("Construyendo ratings compuestos...")
     comp_ratings = build_composite_ratings(elo_ratings, elo_weight=0.6)
 
+    print("Cargando calibración de empate...")
+    cal = load_calibration()
+    if cal:
+        set_draw_params(*cal)
+        print(f"  Calibración cargada: a={cal[0]:.4f}, b={cal[1]:.5f}, c={cal[2]:.4f}")
+
+    print("Calculando ataque/defensa y forma...")
+    df_raw = pd.read_csv("data/raw/results.csv", parse_dates=["date"])
+    attack_defense = compute_attack_defense(df_raw)
+    form_adj = compute_form(df_raw)
+    print(f"  {len(attack_defense)} equipos con A/D | {len(form_adj)} con forma.")
+
     print("Cargando resultados de simulaciones...")
     elo_results  = pd.read_csv("results/csv/predicciones_elo.csv")
     comp_results = pd.read_csv("results/csv/predicciones_compuesto.csv")
 
-    return elo_ratings, fifa_rankings, comp_ratings, elo_results, comp_results
+    return elo_ratings, fifa_rankings, comp_ratings, elo_results, comp_results, attack_defense, form_adj
 
 
 def match_probabilities(team_a, team_b, ratings, neutral=True):
@@ -227,7 +243,7 @@ def sheet_group_stage(wb, schedule_df, comp_ratings, elo_ratings, fifa_rankings)
 # ═══════════════════════════════════════════════════════════════════════════════
 # HOJA 2 — CLASIFICACIÓN PROYECTADA
 # ═══════════════════════════════════════════════════════════════════════════════
-def project_group_standings(comp_ratings):
+def project_group_standings(comp_ratings, attack_defense=None, form_adj=None):
     """Simula múltiples veces y toma el clasificado más frecuente."""
     from collections import Counter
     N = 5000
@@ -235,9 +251,8 @@ def project_group_standings(comp_ratings):
     second_counts = {g: Counter() for g in GROUPS}
     third_counts  = {g: Counter() for g in GROUPS}
 
-    from src.simulator import simulate_group_stage
     for _ in range(N):
-        results = simulate_group_stage(comp_ratings)
+        results, _ = simulate_group_stage(comp_ratings, attack_defense, form_adj)
         for g, teams in results.items():
             first_counts[g][teams[0]]  += 1
             second_counts[g][teams[1]] += 1
@@ -265,9 +280,9 @@ def project_group_standings(comp_ratings):
     return standings
 
 
-def sheet_group_standings(wb, comp_ratings):
+def sheet_group_standings(wb, comp_ratings, attack_defense=None, form_adj=None):
     print("  Proyectando clasificación (5,000 simulaciones)...")
-    standings = project_group_standings(comp_ratings)
+    standings = project_group_standings(comp_ratings, attack_defense, form_adj)
 
     ws = wb.create_sheet("Clasificación Proyectada")
     ws.sheet_view.showGridLines = False
@@ -350,11 +365,8 @@ def sheet_group_standings(wb, comp_ratings):
 # ═══════════════════════════════════════════════════════════════════════════════
 # HOJA 3 — FASE ELIMINATORIA
 # ═══════════════════════════════════════════════════════════════════════════════
-def project_knockout(comp_ratings):
+def project_knockout(comp_ratings, attack_defense=None, form_adj=None):
     """Proyecta el bracket usando el ganador más probable en cada partido."""
-    from src.simulator import simulate_group_stage, get_third_place_qualifiers
-
-    # Mejor estimación de clasificados (5000 sims → más frecuente)
     from collections import Counter
     N = 3000
     advance_first  = {g: Counter() for g in GROUPS}
@@ -362,7 +374,7 @@ def project_knockout(comp_ratings):
     advance_third  = {g: Counter() for g in GROUPS}
 
     for _ in range(N):
-        res = simulate_group_stage(comp_ratings)
+        res, _ = simulate_group_stage(comp_ratings, attack_defense, form_adj)
         for g, teams in res.items():
             advance_first[g][teams[0]]  += 1
             advance_second[g][teams[1]] += 1
@@ -428,9 +440,9 @@ def project_knockout(comp_ratings):
     return bracket
 
 
-def sheet_knockout(wb, comp_ratings):
+def sheet_knockout(wb, comp_ratings, attack_defense=None, form_adj=None):
     print("  Proyectando bracket eliminatorio...")
-    bracket = project_knockout(comp_ratings)
+    bracket = project_knockout(comp_ratings, attack_defense, form_adj)
 
     ws = wb.create_sheet("Fase Eliminatoria")
     ws.sheet_view.showGridLines = False
@@ -669,12 +681,128 @@ def sheet_ratings(wb, elo_ratings, fifa_rankings, comp_ratings):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# HOJA 6 — VALIDACIÓN DEL MODELO (BACKTESTING)
+# ═══════════════════════════════════════════════════════════════════════════════
+def sheet_validation(wb):
+    """Hoja con métricas de backtesting 2018/2022 y comparativa de modelos."""
+    ws = wb.create_sheet("Validación Modelo")
+    ws.sheet_view.showGridLines = False
+
+    ws.merge_cells("A1:G1")
+    ws["A1"] = "📊  VALIDACIÓN DEL MODELO — BACKTESTING MUNDIALES 2018 Y 2022"
+    ws["A1"].fill = fill(C_HEADER_BG)
+    ws["A1"].font = Font(bold=True, color=C_HEADER_FG, name="Calibri", size=13)
+    ws["A1"].alignment = center()
+    ws.row_dimensions[1].height = 28
+
+    # Sección: resumen de backtesting
+    row = 3
+    ws.merge_cells(f"A{row}:G{row}")
+    ws[f"A{row}"] = "Resultados de Backtesting (50,000 simulaciones por Mundial)"
+    ws[f"A{row}"].fill = fill(C_SUBHEAD_BG)
+    ws[f"A{row}"].font = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
+    ws[f"A{row}"].alignment = center()
+    row += 1
+
+    headers = ["Mundial", "Campeón Real", "Prob. Predicha", "Ranking Campeón",
+               "Brier Score", "Log-Loss", "vs. Naive (equiprobable)"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=row, column=col, value=h)
+        style_header(c, bg="2E75B6")
+    row += 1
+
+    widths = [18, 16, 14, 15, 13, 12, 22]
+    for i, w in enumerate(widths, 1):
+        set_col_width(ws, i, w)
+
+    backtest_data = [
+        ("Rusia 2018",  "France",    "7.67%",  4,  0.030395, 2.5673),
+        ("Qatar 2022",  "Argentina", "19.37%", 2,  0.024207, 1.6413),
+    ]
+    naive_bs = 0.030273
+    naive_ll = 3.4657
+
+    for wc_name, champion, prob, rank, bs, ll in backtest_data:
+        improve_bs = (naive_bs - bs) / naive_bs * 100
+        improve_ll = (naive_ll - ll) / naive_ll * 100
+        vs_naive = f"BS {improve_bs:+.1f}% | LL {improve_ll:+.1f}%"
+
+        bg = "E8F5E9" if bs < naive_bs else "FFEBEE"
+        vals = [wc_name, champion, prob, f"#{rank}", f"{bs:.6f}", f"{ll:.4f}", vs_naive]
+        for col, val in enumerate(vals, 1):
+            c = ws.cell(row=row, column=col, value=val)
+            c.fill = fill(bg)
+            c.border = BORDER_THIN
+            c.alignment = center() if col != 1 else left()
+            c.font = Font(name="Calibri", size=10, bold=(col == 2))
+        row += 1
+
+    # Fila naive (referencia)
+    vals = ["Naive (1/32 equiprobable)", "—", "3.13%", "—", f"{naive_bs:.6f}", f"{naive_ll:.4f}", "Línea base"]
+    for col, val in enumerate(vals, 1):
+        c = ws.cell(row=row, column=col, value=val)
+        c.fill = fill("FFF3CD")
+        c.border = BORDER_THIN
+        c.alignment = center() if col != 1 else left()
+        c.font = Font(name="Calibri", size=10, italic=True)
+    row += 2
+
+    # Sección: comparativa de modelos
+    ws.merge_cells(f"A{row}:G{row}")
+    ws[f"A{row}"] = "Comparativa de Modelos — Brier Score Promedio (2018 + 2022)"
+    ws[f"A{row}"].fill = fill(C_SUBHEAD_BG)
+    ws[f"A{row}"].font = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
+    ws[f"A{row}"].alignment = center()
+    row += 1
+
+    headers2 = ["Modelo", "Brier 2018", "Brier 2022", "Promedio BS", "LL 2018", "LL 2022", "Mejora vs Naive"]
+    for col, h in enumerate(headers2, 1):
+        c = ws.cell(row=row, column=col, value=h)
+        style_header(c, bg="2E75B6")
+    row += 1
+
+    model_data = [
+        ("v2 ELO+decay+AD+Forma (completo)", 0.030477, 0.024116, 2.5845, 1.6384),
+        ("v1 ELO+decay (sin AD/Forma)",       0.029910, 0.026015, 2.6205, 1.9590),
+        ("Naive (1/32 equiprobable)",          0.030273, 0.030273, 3.4657, 3.4657),
+    ]
+    colors = ["C8E6C9", "E3F2FD", "FFF3CD"]
+
+    for (label, bs18, bs22, ll18, ll22), bg in zip(model_data, colors):
+        avg_bs = (bs18 + bs22) / 2
+        avg_ll = (ll18 + ll22) / 2
+        improve = (naive_bs - avg_bs) / naive_bs * 100 if label != "Naive (1/32 equiprobable)" else 0.0
+        improve_str = f"{improve:+.1f}%" if improve != 0 else "referencia"
+        vals = [label, f"{bs18:.6f}", f"{bs22:.6f}", f"{avg_bs:.6f}", f"{ll18:.4f}", f"{ll22:.4f}", improve_str]
+        for col, val in enumerate(vals, 1):
+            c = ws.cell(row=row, column=col, value=val)
+            c.fill = fill(bg)
+            c.border = BORDER_THIN
+            c.alignment = center() if col != 1 else left()
+            c.font = Font(name="Calibri", size=10, bold=(col == 1 and label.startswith("v2")))
+        row += 1
+
+    row += 1
+    nota = ("Brier Score: más bajo = mejor (0 = perfecto, 1 = pésimo). "
+            "Log-Loss: más bajo = mejor. "
+            "Naive = 1/n igual prob. a todos. "
+            "El modelo v2 supera al naive en 9.8% en Brier Score y 53% en Log-Loss (Qatar 2022).")
+    ws.merge_cells(f"A{row}:G{row}")
+    ws[f"A{row}"] = nota
+    ws[f"A{row}"].font = Font(name="Calibri", size=9, italic=True, color="555555")
+    ws[f"A{row}"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[row].height = 36
+
+    print(f"  Hoja 'Validación Modelo': backtesting 2018/2022")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 def main():
-    print("=== Generando Excel del Mundial 2026 ===\n")
+    print("=== Generando Excel del Mundial 2026 (Modelo v2) ===\n")
 
-    elo_ratings, fifa_rankings, comp_ratings, elo_results, comp_results = load_all_data()
+    elo_ratings, fifa_rankings, comp_ratings, elo_results, comp_results, attack_defense, form_adj = load_all_data()
 
     # Cargar calendario de partidos
     df = pd.read_csv("data/raw/results.csv", parse_dates=["date"])
@@ -687,10 +815,11 @@ def main():
 
     print("\nGenerando hojas...")
     sheet_group_stage(wb, schedule, comp_ratings, elo_ratings, fifa_rankings)
-    sheet_group_standings(wb, comp_ratings)
-    sheet_knockout(wb, comp_ratings)
+    sheet_group_standings(wb, comp_ratings, attack_defense, form_adj)
+    sheet_knockout(wb, comp_ratings, attack_defense, form_adj)
     sheet_championship(wb, elo_results, comp_results)
     sheet_ratings(wb, elo_ratings, fifa_rankings, comp_ratings)
+    sheet_validation(wb)
 
     os.makedirs("results/excel", exist_ok=True)
     output_path = "results/excel/Mundial_2026_Predicciones.xlsx"
