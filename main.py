@@ -9,16 +9,20 @@ Uso:
   python main.py --elo-weight 0.7        # ajusta peso ELO vs FIFA (default 0.6)
   python main.py --match "Brazil" "Argentina"  # predice un partido específico
   python main.py --download              # forzar descarga del dataset
+  python main.py --calibrate             # calibrar prob. de empate empíricamente
+  python main.py --recalc                # recalcular ELO desde cero (borra caché)
 """
 import argparse
 import sys
 import os
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from src.data_loader import download_dataset, load_results, get_processed_path
-from src.elo_calculator import compute_elo_ratings, win_probability
+from src.elo_calculator import compute_elo_ratings, win_probability, set_draw_params
+from src.calibration import load_calibration, run_calibration, print_calibration_summary
 from src.fifa_ranking import load_fifa_rankings, composite_rating, get_fifa_points
 from src.simulator import run_monte_carlo, simulate_group_stage, build_composite_ratings
 from src.visualizer import plot_championship_probabilities, plot_elo_top_teams, plot_group_stage_summary
@@ -27,16 +31,38 @@ from src.visualizer import plot_championship_probabilities, plot_elo_top_teams, 
 def build_elo_ratings(force: bool = False) -> dict:
     cache_path = get_processed_path("elo_ratings.csv")
     if os.path.exists(cache_path) and not force:
-        print("Cargando ratings ELO desde caché...")
+        print("Cargando ratings ELO desde caché (usa --recalc si cambiaste el modelo)...")
         df = pd.read_csv(cache_path)
         return dict(zip(df["team"], df["elo"]))
 
-    print("Calculando ratings ELO históricos...")
+    print("Calculando ratings ELO históricos (v2: goal multiplier + time decay + K dinámico)...")
     df = load_results()
     ratings = compute_elo_ratings(df)
     pd.DataFrame([{"team": t, "elo": e} for t, e in ratings.items()]).to_csv(cache_path, index=False)
     print(f"ELO calculado para {len(ratings)} selecciones.")
     return ratings
+
+
+def apply_calibration(args_calibrate: bool) -> None:
+    """Carga o ejecuta la calibración de probabilidad de empate y la inyecta en el modelo."""
+    print("\n=== CALIBRACIÓN DE PROBABILIDAD DE EMPATE ===")
+    if args_calibrate:
+        print("  Ejecutando calibración empírica (esto puede tardar ~1 min)...")
+        df = load_results()
+        a, b, c = run_calibration(df=df, force=True)
+        print("  Calibración completada y guardada.")
+    else:
+        cal = load_calibration()
+        if cal:
+            a, b, c = cal
+            print("  Parámetros cargados desde caché.")
+        else:
+            print("  Sin calibración guardada — usando parámetros por defecto.")
+            print("  Tip: ejecuta con --calibrate para calibrar empíricamente.")
+            return
+
+    set_draw_params(a, b, c)
+    print_calibration_summary(a, b, c)
 
 
 def predict_match(team_a: str, team_b: str, elo_ratings: dict, fifa_rankings: dict):
@@ -123,6 +149,8 @@ def main():
                         help="Peso del ELO en el rating compuesto (0.0–1.0)")
     parser.add_argument("--match", nargs=2, metavar=("EQUIPO_A", "EQUIPO_B"))
     parser.add_argument("--no-plot", action="store_true")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Calibrar probabilidad de empate desde datos históricos")
     args = parser.parse_args()
 
     # 1. Datos
@@ -137,12 +165,15 @@ def main():
     # 2. ELO ratings
     elo_ratings = build_elo_ratings(force=args.recalc)
 
-    # 3. FIFA rankings
+    # 3. Calibración de probabilidad de empate
+    apply_calibration(args.calibrate)
+
+    # 4. FIFA rankings
     print("Cargando ranking FIFA...")
     fifa_rankings = load_fifa_rankings()
     print(f"  {len(fifa_rankings)} selecciones con puntos FIFA cargadas.")
 
-    # 4. Partido específico
+    # 5. Partido específico
     if args.match:
         predict_match(args.match[0], args.match[1], elo_ratings, fifa_rankings)
         return
