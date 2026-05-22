@@ -1,6 +1,6 @@
 # Predicción de Resultados del Mundial 2026
 
-Modelo de predicción basado en **ELO histórico v2** + **Ranking FIFA** + **Ratings de Ataque/Defensa** + **Forma Reciente** con **simulación Monte Carlo** de 100,000 torneos completos.
+Modelo de predicción basado en **ELO histórico v2** + **Ranking FIFA** + **Ratings de Ataque/Defensa** + **Forma Reciente** + **ML Ensemble (XGBoost)** con **simulación Monte Carlo** de 100,000 torneos completos.
 
 ---
 
@@ -107,33 +107,33 @@ Los datos históricos se descargan automáticamente desde [martj42/international
 ### Simulación completa recomendada
 
 ```bash
-# Primer uso: recalcular ELO + calibrar empate + correr 100k simulaciones
-python main.py --recalc --calibrate --composite --compare --sims 100000
+# Primer uso: recalcular ELO + calibrar + entrenar ML + correr 100k simulaciones
+python3 main.py --recalc --calibrate --train-ml --composite --compare --sims 100000
 
-# Ejecuciones posteriores (usa caché de ELO y calibración)
-python main.py --composite --compare
+# Ejecuciones posteriores (usa caché de ELO, calibración y modelo ML)
+python3 main.py --composite --compare
 ```
 
 ### Otros comandos
 
 ```bash
-# Solo modelo ELO + FIFA (sin comparar)
-python main.py --composite
+# Sin modelo ML (más rápido)
+python3 main.py --composite --compare --no-ml
 
 # Predecir un partido específico
-python main.py --match "Brazil" "Argentina"
+python3 main.py --match "Brazil" "Argentina"
 
 # Backtesting sobre Mundiales 2018 y 2022
-python main.py --backtest --backtest-sims 50000
+python3 main.py --backtest --backtest-sims 50000
 
-# Modo básico sin features adicionales (más rápido)
-python main.py --composite --no-features
+# Modo básico sin features adicionales
+python3 main.py --composite --no-features
 ```
 
 ### Generar el archivo Excel
 
 ```bash
-python generate_excel.py
+python3 generate_excel.py
 ```
 
 Genera `results/excel/Mundial_2026_Predicciones.xlsx` con **6 hojas** detalladas.
@@ -175,6 +175,7 @@ prediccion-mundial-2026/
 │   ├── calibration.py       # Calibración empírica de P(empate) con scipy
 │   ├── attack_defense.py    # Ratings de ataque/defensa (Dixon-Coles simplificado)
 │   ├── form.py              # Factor de forma reciente (últimos 10 partidos)
+│   ├── ml_model.py          # ML Ensemble: XGBoost, build_feature_matrix, precompute
 │   ├── backtesting.py       # Backtesting sobre Mundiales 2018 y 2022
 │   ├── fifa_ranking.py      # Scraping del ranking FIFA y rating compuesto
 │   ├── simulator.py         # Simulación Monte Carlo — soporta 32 y 48 equipos
@@ -183,12 +184,13 @@ prediccion-mundial-2026/
 │
 ├── data/
 │   ├── raw/                 # Dataset descargado (CSV + JSON ranking FIFA)
-│   └── processed/           # ELO ratings y calibración cacheados
+│   └── processed/           # ELO ratings, calibración y modelo ML cacheados
+│                            # (elo_ratings.csv, draw_calibration.json, ml_model.pkl)
 │
 └── results/
     ├── csv/
     │   ├── predicciones_elo.csv         # Probabilidades modelo ELO puro
-    │   ├── predicciones_compuesto.csv   # Probabilidades modelo completo
+    │   ├── predicciones_compuesto.csv   # Probabilidades modelo ensemble ← usar este
     │   ├── comparacion_modelos.csv      # Diferencias entre modelos
     │   └── backtest_summary.csv         # Métricas de validación
     └── excel/

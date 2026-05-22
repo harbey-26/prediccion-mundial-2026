@@ -215,4 +215,4 @@ data/processed/
 
 - **GitHub**: https://github.com/harbey-26/prediccion-mundial-2026
 - **Rama principal**: `main`
-- **Último commit**: feat: agregar modelo ML ensemble XGBoost (Fase 4)
+- **Último commit**: docs: cierre del proyecto — requirements, README y resultados v3 finales
