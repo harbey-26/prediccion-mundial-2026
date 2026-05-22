@@ -155,6 +155,10 @@ def main():
                         help="Calibrar probabilidad de empate desde datos históricos")
     parser.add_argument("--no-features", action="store_true",
                         help="Desactivar ataque/defensa y forma (modo básico)")
+    parser.add_argument("--backtest", action="store_true",
+                        help="Ejecutar backtesting sobre Mundiales 2018 y 2022")
+    parser.add_argument("--backtest-sims", type=int, default=50_000,
+                        help="Simulaciones para backtesting (default: 50,000)")
     args = parser.parse_args()
 
     # 1. Datos
@@ -171,6 +175,21 @@ def main():
 
     # 3. Calibración de probabilidad de empate
     apply_calibration(args.calibrate)
+
+    # Backtesting mode (sale después de reportar)
+    if args.backtest:
+        from src.backtesting import run_all_backtests
+        print("\nCargando datos para backtesting...")
+        df_full = load_results()
+        summary = run_all_backtests(
+            df_full,
+            n_simulations=args.backtest_sims,
+            use_attack_defense=not args.no_features,
+            use_form=not args.no_features,
+        )
+        summary.to_csv("results/csv/backtest_summary.csv", index=False)
+        print(f"\nResultados guardados en results/csv/backtest_summary.csv")
+        return
 
     # 4. FIFA rankings
     print("Cargando ranking FIFA...")

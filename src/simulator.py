@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
 
 from .elo_calculator import win_probability
-from .world_cup_2026 import GROUPS
+from . import world_cup_2026  # importar módulo (no atributo) para que backtest pueda reasignar GROUPS
 from .fifa_ranking import load_fifa_rankings, composite_rating
 from .attack_defense import expected_goals, GLOBAL_AVG_GOALS
 
@@ -66,7 +66,7 @@ def simulate_group_stage(
     results: Dict[str, List[str]] = {}
     tables: Dict[str, Dict] = {}
 
-    for group_name, teams in GROUPS.items():
+    for group_name, teams in world_cup_2026.GROUPS.items():
         table = {
             t: {
                 "pts": 0, "gf": 0, "gc": 0,
@@ -171,24 +171,34 @@ def build_knockout_bracket(
     group_tables: Dict[str, Dict],
     ratings: Dict[str, float],
 ) -> List[Tuple[str, str]]:
-    """Construye los 16 cruces de la ronda de 32."""
+    """
+    Construye los cruces de la ronda eliminatoria inicial.
+    Formato 8 grupos (32 equipos): genera R16 directamente sin terceros.
+    Formato 12 grupos (48 equipos): genera R32 con 8 mejores terceros.
+    """
     groups = sorted(group_results.keys())
-
     firsts = {g: group_results[g][0] for g in groups}
     seconds = {g: group_results[g][1] for g in groups}
-    thirds = get_third_place_qualifiers(group_results, group_tables, ratings)
-
     matchups: List[Tuple[str, str]] = []
-    group_pairs = [
-        ("A", "B"), ("C", "D"), ("E", "F"), ("G", "H"),
-        ("I", "J"), ("K", "L"),
-    ]
-    for g1, g2 in group_pairs:
-        matchups.append((firsts[g1], seconds[g2]))
-        matchups.append((firsts[g2], seconds[g1]))
 
-    for i in range(0, len(thirds) - 1, 2):
-        matchups.append((thirds[i], thirds[i + 1]))
+    if len(groups) == 8:
+        # Formato 32 equipos (2018, 2022): 4 pares de grupos → 8 cruces en R16
+        group_pairs = [("A", "B"), ("C", "D"), ("E", "F"), ("G", "H")]
+        for g1, g2 in group_pairs:
+            matchups.append((firsts[g1], seconds[g2]))
+            matchups.append((firsts[g2], seconds[g1]))
+    else:
+        # Formato 48 equipos (2026): 6 pares + 8 mejores terceros → 16 cruces en R32
+        thirds = get_third_place_qualifiers(group_results, group_tables, ratings)
+        group_pairs = [
+            ("A", "B"), ("C", "D"), ("E", "F"), ("G", "H"),
+            ("I", "J"), ("K", "L"),
+        ]
+        for g1, g2 in group_pairs:
+            matchups.append((firsts[g1], seconds[g2]))
+            matchups.append((firsts[g2], seconds[g1]))
+        for i in range(0, len(thirds) - 1, 2):
+            matchups.append((thirds[i], thirds[i + 1]))
 
     return matchups[:16]
 
@@ -210,28 +220,24 @@ def simulate_tournament(
     attack_defense: Optional[Dict[str, Dict[str, float]]] = None,
     form_adj: Optional[Dict[str, float]] = None,
 ) -> str:
-    """Simula un torneo completo y retorna el campeón."""
+    """
+    Simula un torneo completo y retorna el campeón.
+    Soporta formato 32 equipos (8 grupos, 2018/2022) y 48 equipos (12 grupos, 2026).
+    """
     # Fase de grupos
     group_results, group_tables = simulate_group_stage(ratings, attack_defense, form_adj)
 
-    # Ronda de 32
-    r32_pairs = build_knockout_bracket(group_results, group_tables, ratings)
-    r16_teams = simulate_knockout_round(r32_pairs, ratings, form_adj)
+    # Primera ronda eliminatoria (R32 en 2026, R16 en 2018/2022)
+    initial_pairs = build_knockout_bracket(group_results, group_tables, ratings)
+    next_round = simulate_knockout_round(initial_pairs, ratings, form_adj)
 
-    # Ronda de 16
-    r16_pairs = list(zip(r16_teams[::2], r16_teams[1::2]))
-    qf_teams = simulate_knockout_round(r16_pairs, ratings, form_adj)
-
-    # Cuartos de final
-    qf_pairs = list(zip(qf_teams[::2], qf_teams[1::2]))
-    sf_teams = simulate_knockout_round(qf_pairs, ratings, form_adj)
-
-    # Semifinales
-    sf_pairs = list(zip(sf_teams[::2], sf_teams[1::2]))
-    finalists = simulate_knockout_round(sf_pairs, ratings, form_adj)
+    # Rondas siguientes hasta que queden 2 finalistas
+    while len(next_round) > 2:
+        pairs = list(zip(next_round[::2], next_round[1::2]))
+        next_round = simulate_knockout_round(pairs, ratings, form_adj)
 
     # Final
-    return simulate_match(finalists[0], finalists[1], ratings, neutral=True, allow_draw=False, form_adj=form_adj)
+    return simulate_match(next_round[0], next_round[1], ratings, neutral=True, allow_draw=False, form_adj=form_adj)
 
 
 def build_composite_ratings(
