@@ -1,6 +1,6 @@
 # Predicción de Resultados del Mundial 2026
 
-Modelo de predicción basado en **ELO histórico** + **Ranking FIFA** con **simulación Monte Carlo** para proyectar el ganador de cada partido y el campeón del Mundial FIFA 2026.
+Modelo de predicción basado en **ELO histórico v2** + **Ranking FIFA** + **Ratings de Ataque/Defensa** + **Forma Reciente** con **simulación Monte Carlo** de 100,000 torneos completos.
 
 ---
 
@@ -10,20 +10,65 @@ Modelo de predicción basado en **ELO histórico** + **Ranking FIFA** con **simu
 |---------|-------------|
 | [📅 Partidos y Proyecciones](https://docs.google.com/spreadsheets/d/11QDCdK48WzA5-FFGN6qU6ELMrMH7zcAsWj7CBJCn16g/edit) | 72 partidos de fase de grupos con probabilidades y ganador proyectado |
 | [🏆 Probabilidades de Campeonato](https://docs.google.com/spreadsheets/d/1kmZyOijsDKZi9EwnPrBLlNAC0cNhwJhEtVLs-6pXCT0/edit) | 48 selecciones — comparativa modelo ELO vs ELO+FIFA |
-| [🪜 Bracket Eliminatorio](https://docs.google.com/spreadsheets/d/1yjlHZ95mK7r107TB1mZyn4Z6SBjbli6A8D9316P61CQ/edit) | Ronda de 32 → Final con ganador proyectado en cada duelo (sin equipos duplicados, 10k sims) |
+| [🪜 Bracket Eliminatorio](https://docs.google.com/spreadsheets/d/1yjlHZ95mK7r107TB1mZyn4Z6SBjbli6A8D9316P61CQ/edit) | Ronda de 32 → Final con ganador proyectado en cada duelo |
 
 ---
 
-## Descripción del Modelo
+## Resultados del Modelo v2 (100,000 simulaciones)
 
-El modelo combina dos fuentes de datos para calcular un **rating compuesto** por selección:
+### Top 10 candidatos al título — Modelo ELO + FIFA + Ataque/Defensa + Forma
 
-| Fuente | Peso | Descripción |
-|--------|:----:|-------------|
-| ELO Histórico | 60% | Calculado a partir de 49,257 partidos internacionales (1872–2026). Los torneos más importantes (Mundiales, Eurocopas) tienen mayor ponderación. |
-| Ranking FIFA | 40% | Puntos FIFA oficiales scrapeados de Transfermarkt (200 selecciones, actualización abril 2026). |
+| # | Selección | Prob. ELO puro | Prob. Modelo completo | Δ FIFA+Features |
+|---|-----------|:--------------:|:---------------------:|:---------------:|
+| 🥇 | **España** | 22.7% | **22.6%** | →0.1% |
+| 🥈 | **Argentina** | 11.8% | **13.9%** | ↑2.1% |
+| 🥉 | **Francia** | 11.3% | **13.5%** | ↑2.2% |
+| 4 | Marruecos | 8.6% | **8.1%** | ↓0.6% |
+| 5 | Inglaterra | 7.0% | **7.8%** | ↑0.8% |
+| 6 | Países Bajos | 3.1% | **4.1%** | ↑1.0% |
+| 7 | Japón | 7.4% | **4.0%** | ↓3.5% |
+| 8 | Alemania | 3.3% | **3.8%** | →0.5% |
+| 9 | Brasil | 2.0% | **2.9%** | ↑0.9% |
+| 10 | Portugal | 1.9% | **2.6%** | ↑0.7% |
 
-Con ese rating se calcula la **probabilidad de victoria, empate y derrota** para cada enfrentamiento, y se corre una **simulación Monte Carlo** de 100,000 torneos completos para estimar la probabilidad de que cada selección gane el Mundial.
+> **Lectura:** El ranking FIFA favorece a Argentina (+2.1%) y Francia (+2.2%), que tienen mejor posición oficial que la que reflejan sus resultados históricos. Japón baja significativamente (-3.5%) porque su FIFA ranking no respalda su ELO reciente.
+
+### Validación del modelo — Backtesting Mundiales 2018 y 2022
+
+| Mundial | Campeón real | Prob. asignada | Ranking | Brier Score | Log-Loss |
+|---------|-------------|:--------------:|:-------:|:-----------:|:--------:|
+| Rusia 2018 | Francia | 7.67% | #4 de 32 | 0.030395 | 2.567 |
+| Qatar 2022 | Argentina | 19.37% | #2 de 32 | 0.024207 | 1.641 |
+| **Naive (1/32)** | — | 3.13% | — | 0.030273 | 3.466 |
+
+El modelo **supera al baseline equiprobable** en ambos torneos: +20.6% mejor Brier Score en 2022 y +53% mejor Log-Loss. En ambos mundiales el campeón real estuvo entre los dos primeros favoritos.
+
+---
+
+## Descripción del Modelo v2
+
+El modelo combina cuatro fuentes de información para cada selección:
+
+| Componente | Peso | Descripción |
+|-----------|:----:|-------------|
+| **ELO Histórico v2** | 60% | Calculado sobre 49,257 partidos (1872–2026). Incluye **goal-difference multiplier** (3-0 vale 1.75× más que 1-0), **time decay** (partidos recientes pesan más) y **K-factor dinámico** por incertidumbre. |
+| **Ranking FIFA** | 40% | Puntos FIFA scrapeados de Transfermarkt (200 selecciones, abril 2026). |
+| **Ataque/Defensa** | — | Ratings separados por equipo (metodología Dixon-Coles, últimos 4 años). Determina los goles esperados vía distribución Poisson: `λ = avg_global × ataque_A × defensa_B`. |
+| **Forma Reciente** | — | Ajuste ELO de ±80 pts basado en los últimos 10 partidos (pesos exponenciales). Alemania, Francia y Argentina son los equipos en mejor forma actualmente. |
+
+La **probabilidad de empate** se calibra empíricamente con `scipy.optimize.curve_fit` sobre el historial completo: `P(empate) = 0.239 × exp(-0.00158 × |diff_ELO|) + 0.020`.
+
+### Arquitectura del simulador
+
+```
+100,000 torneos completos:
+  ├── Fase de grupos (round-robin, 12 grupos)
+  │     Resultado: ELO-based  |  Goles: Poisson(λ ataque × defensa)
+  │     Clasifican: 1° y 2° de cada grupo + 8 mejores terceros (criterio FIFA)
+  ├── R32 → R16 → QF → SF → Final
+  │     Sin empate (penalty shootout por probabilidad ELO)
+  └── Acumula: P(campeón) por selección
+```
 
 ---
 
@@ -52,39 +97,47 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Los datos históricos se descargan automáticamente desde el repositorio público de [martj42/international_results](https://github.com/martj42/international_results) al ejecutar el modelo por primera vez.
+Los datos históricos se descargan automáticamente desde [martj42/international_results](https://github.com/martj42/international_results) al ejecutar el modelo por primera vez.
 
 ---
 
 ## Uso
 
-### Simulación completa (modelo compuesto ELO + FIFA)
+### Simulación completa recomendada
 
 ```bash
+# Primer uso: recalcular ELO + calibrar empate + correr 100k simulaciones
+python main.py --recalc --calibrate --composite --compare --sims 100000
+
+# Ejecuciones posteriores (usa caché de ELO y calibración)
+python main.py --composite --compare
+```
+
+### Otros comandos
+
+```bash
+# Solo modelo ELO + FIFA (sin comparar)
 python main.py --composite
-```
 
-### Comparar modelo ELO puro vs ELO + FIFA
-
-```bash
-python main.py --compare
-```
-
-### Ajustar número de simulaciones
-
-```bash
-python main.py --compare --sims 50000
-```
-
-### Predecir un partido específico
-
-```bash
+# Predecir un partido específico
 python main.py --match "Brazil" "Argentina"
+
+# Backtesting sobre Mundiales 2018 y 2022
+python main.py --backtest --backtest-sims 50000
+
+# Modo básico sin features adicionales (más rápido)
+python main.py --composite --no-features
 ```
 
-Devuelve las probabilidades de victoria, empate y derrota según ambos modelos.
+### Generar el archivo Excel
 
-### Opciones disponibles
+```bash
+python generate_excel.py
+```
+
+Genera `results/excel/Mundial_2026_Predicciones.xlsx` con **6 hojas** detalladas.
+
+### Todas las opciones
 
 | Argumento | Descripción | Default |
 |-----------|-------------|---------|
@@ -93,17 +146,13 @@ Devuelve las probabilidades de victoria, empate y derrota según ambos modelos.
 | `--compare` | Ejecutar ambos modelos y comparar resultados | `False` |
 | `--elo-weight X` | Peso del ELO en el rating compuesto (0.0–1.0) | `0.6` |
 | `--match A B` | Predecir un partido entre dos selecciones | — |
-| `--recalc` | Recalcular ELO desde cero (ignora caché) | `False` |
+| `--recalc` | Recalcular ELO desde cero (borra caché) | `False` |
+| `--calibrate` | Calibrar probabilidad de empate empíricamente | `False` |
+| `--backtest` | Backtesting sobre Mundiales 2018 y 2022 | `False` |
+| `--backtest-sims N` | Simulaciones para backtesting | `50000` |
+| `--no-features` | Desactivar ataque/defensa y forma (modo básico) | `False` |
 | `--download` | Forzar re-descarga del dataset | `False` |
 | `--no-plot` | No generar gráficos | `False` |
-
-### Generar el archivo Excel
-
-```bash
-python generate_excel.py
-```
-
-Genera `results/excel/Mundial_2026_Predicciones.xlsx` con 5 hojas detalladas.
 
 ---
 
@@ -118,72 +167,42 @@ prediccion-mundial-2026/
 │
 ├── src/
 │   ├── data_loader.py       # Descarga y limpieza del dataset histórico
-│   ├── elo_calculator.py    # Cálculo de ratings ELO y probabilidades de partido
+│   ├── elo_calculator.py    # ELO v2: goal multiplier, time decay, K dinámico
+│   ├── calibration.py       # Calibración empírica de P(empate) con scipy
+│   ├── attack_defense.py    # Ratings de ataque/defensa (Dixon-Coles simplificado)
+│   ├── form.py              # Factor de forma reciente (últimos 10 partidos)
+│   ├── backtesting.py       # Backtesting sobre Mundiales 2018 y 2022
 │   ├── fifa_ranking.py      # Scraping del ranking FIFA y rating compuesto
-│   ├── simulator.py         # Simulación Monte Carlo del torneo completo
-│   ├── visualizer.py        # Gráficos matplotlib (ELO, probabilidades, grupos)
+│   ├── simulator.py         # Simulación Monte Carlo — soporta 32 y 48 equipos
+│   ├── visualizer.py        # Gráficos matplotlib
 │   └── world_cup_2026.py    # Grupos y equipos oficiales del Mundial 2026
 │
 ├── data/
 │   ├── raw/                 # Dataset descargado (CSV + JSON ranking FIFA)
-│   └── processed/           # ELO ratings cacheados
+│   └── processed/           # ELO ratings y calibración cacheados
 │
 └── results/
     ├── csv/
     │   ├── predicciones_elo.csv         # Probabilidades modelo ELO puro
-    │   ├── predicciones_compuesto.csv   # Probabilidades modelo ELO + FIFA
-    │   ├── predicciones_campeon.csv     # Última simulación ejecutada
-    │   └── comparacion_modelos.csv      # Diferencias entre ambos modelos
+    │   ├── predicciones_compuesto.csv   # Probabilidades modelo completo
+    │   ├── comparacion_modelos.csv      # Diferencias entre modelos
+    │   └── backtest_summary.csv         # Métricas de validación
     └── excel/
-        └── Mundial_2026_Predicciones.xlsx  # Reporte completo (5 hojas)
+        └── Mundial_2026_Predicciones.xlsx  # Reporte completo (6 hojas)
 ```
 
 ---
 
-## Archivo Excel — Contenido
-
-El Excel generado por `generate_excel.py` contiene 5 hojas:
+## Archivo Excel — Contenido (6 hojas)
 
 | Hoja | Contenido |
 |------|-----------|
 | **Fase de Grupos** | 72 partidos con fecha, probabilidades coloreadas y proyección del ganador |
-| **Clasificación Proyectada** | P(1°), P(2°), P(3°), P(4°) para cada equipo en base a 5,000 simulaciones de fase de grupos |
-| **Fase Eliminatoria** | Bracket completo R32 → Octavos → Cuartos → Semifinales → Final con ganador proyectado |
-| **Prob. Campeonato** | Las 48 selecciones ordenadas por probabilidad de título con comparación entre modelos |
-| **Ratings** | ELO histórico, puntos FIFA y rating compuesto de los 48 clasificados |
-
----
-
-## Resultados del Modelo (100,000 simulaciones)
-
-### Top 10 candidatos al título — Modelo ELO + FIFA
-
-| # | Selección | Probabilidad |
-|---|-----------|:------------:|
-| 🥇 | España | 31.2% |
-| 🥈 | Argentina | 11.5% |
-| 🥉 | Francia | 10.4% |
-| 4 | Brasil | 6.5% |
-| 5 | Inglaterra | 6.3% |
-| 6 | Marruecos | 5.5% |
-| 7 | Países Bajos | 3.5% |
-| 8 | Alemania | 3.0% |
-| 9 | Portugal | 2.6% |
-| 10 | Bélgica | 2.6% |
-
-### Impacto del ranking FIFA sobre el modelo ELO puro
-
-Selecciones que **suben** al incorporar el FIFA ranking: Francia (+1.6%), Marruecos (+1.1%), Bélgica (+1.0%), Brasil (+0.9%), Argentina (+0.9%).
-
-Selecciones que **bajan**: Ecuador (-1.4%), Japón (-1.2%), Australia (-0.9%), Corea del Sur (-0.7%).
-
----
-
-## Datos
-
-- **Dataset histórico:** [martj42/international_results](https://github.com/martj42/international_results) — 49,257 partidos (1872–2026)
-- **Ranking FIFA:** Scrapeado de [Transfermarkt](https://www.transfermarkt.com/statistik/weltrangliste) — actualización abril 2026
-- **Grupos del Mundial 2026:** Extraídos del propio dataset (calendario oficial ya incluido)
+| **Clasificación Proyectada** | P(1°), P(2°), P(3°), P(4°) para cada equipo en base a 5,000 simulaciones |
+| **Fase Eliminatoria** | Bracket completo R32 → Final con ganador proyectado en cada duelo |
+| **Prob. Campeonato** | 48 selecciones ordenadas por probabilidad de título — ELO puro vs. modelo completo |
+| **Ratings** | ELO v2, puntos FIFA y rating compuesto de los 48 clasificados |
+| **Validación Modelo** | Backtesting 2018/2022: Brier Score, Log-Loss y comparativa de modelos |
 
 ---
 
@@ -203,3 +222,11 @@ Selecciones que **bajan**: Ecuador (-1.4%), Japón (-1.2%), Australia (-0.9%), C
 | J | Argentina, Argelia, Austria, Jordania |
 | K | Portugal, Colombia, RD Congo, Uzbekistán |
 | L | Inglaterra, Croacia, Ghana, Panamá |
+
+---
+
+## Datos
+
+- **Dataset histórico:** [martj42/international_results](https://github.com/martj42/international_results) — 49,257 partidos (1872–2026)
+- **Ranking FIFA:** Scrapeado de [Transfermarkt](https://www.transfermarkt.com/statistik/weltrangliste) — actualización abril 2026
+- **Grupos del Mundial 2026:** Extraídos del propio dataset (calendario oficial incluido)
