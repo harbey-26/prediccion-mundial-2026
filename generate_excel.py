@@ -409,9 +409,8 @@ def project_knockout(comp_ratings, attack_defense=None, form_adj=None):
         ra = comp_ratings.get(a, 1500)
         rb = comp_ratings.get(b, 1500)
         pw, pd_, pl = win_probability(ra, rb)
-        p_a = pw + pd_ * 0.5
-        p_b = pl + pd_ * 0.5
-        return (a, round(pw*100,1), round(pl*100,1)) if ra >= rb else (b, round(pl*100,1), round(pw*100,1))
+        winner = a if ra >= rb else b
+        return winner, round(pw*100, 1), round(pl*100, 1)
 
     bracket = []
     current_round = r32
