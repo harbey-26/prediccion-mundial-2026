@@ -24,6 +24,8 @@ from src.data_loader import download_dataset, load_results, get_processed_path
 from src.elo_calculator import compute_elo_ratings, win_probability, set_draw_params
 from src.calibration import load_calibration, run_calibration, print_calibration_summary
 from src.fifa_ranking import load_fifa_rankings, composite_rating, get_fifa_points
+from src.attack_defense import compute_attack_defense
+from src.form import compute_form
 from src.simulator import run_monte_carlo, simulate_group_stage, build_composite_ratings
 from src.visualizer import plot_championship_probabilities, plot_elo_top_teams, plot_group_stage_summary
 
@@ -151,6 +153,8 @@ def main():
     parser.add_argument("--no-plot", action="store_true")
     parser.add_argument("--calibrate", action="store_true",
                         help="Calibrar probabilidad de empate desde datos históricos")
+    parser.add_argument("--no-features", action="store_true",
+                        help="Desactivar ataque/defensa y forma (modo básico)")
     args = parser.parse_args()
 
     # 1. Datos
@@ -173,38 +177,56 @@ def main():
     fifa_rankings = load_fifa_rankings()
     print(f"  {len(fifa_rankings)} selecciones con puntos FIFA cargadas.")
 
-    # 5. Partido específico
+    # 5. Features adicionales: ataque/defensa + forma reciente
+    attack_defense = None
+    form_adj = None
+    if not args.no_features:
+        print("\nCalculando ratings de ataque/defensa (últimos 4 años)...")
+        df_full = load_results()
+        attack_defense = compute_attack_defense(df_full)
+        print(f"  {len(attack_defense)} equipos con datos de ataque/defensa.")
+
+        print("Calculando factor de forma reciente (últimos 10 partidos)...")
+        form_adj = compute_form(df_full)
+        print(f"  {len(form_adj)} equipos con forma calculada.")
+
+    # 6. Partido específico
     if args.match:
         predict_match(args.match[0], args.match[1], elo_ratings, fifa_rankings)
         return
 
-    # 5. Tabla comparativa de ratings para los 48 equipos
+    # 7. Tabla comparativa de ratings para los 48 equipos
     print_top_ratings(elo_ratings, fifa_rankings, n=20)
 
-    # 6. Fase de grupos (muestra)
+    # 8. Fase de grupos (muestra)
     use_composite = args.composite or args.compare
     effective_ratings = (
         build_composite_ratings(elo_ratings, args.elo_weight)
         if use_composite else elo_ratings
     )
-    group_sample = simulate_group_stage(effective_ratings)
+    group_sample, _ = simulate_group_stage(effective_ratings, attack_defense, form_adj)
     print("\n=== PREDICCIÓN FASE DE GRUPOS ===")
     for group, teams in group_sample.items():
         elo_str = " | ".join([f"{t} ({effective_ratings.get(t, 1500):.0f})" for t in teams])
         print(f"  Grupo {group}: {elo_str}")
 
-    # 7. Monte Carlo
+    # 9. Monte Carlo
     os.makedirs("results/csv", exist_ok=True)
     os.makedirs("results/excel", exist_ok=True)
 
     if args.compare:
-        # Correr ambos modelos
         print(f"\n=== MODELO ELO PURO ({args.sims:,} simulaciones) ===")
-        elo_results = run_monte_carlo(elo_ratings, args.sims, use_composite=False)
+        elo_results = run_monte_carlo(
+            elo_ratings, args.sims, use_composite=False,
+            attack_defense=attack_defense, form_adj=form_adj,
+        )
         elo_results.to_csv("results/csv/predicciones_elo.csv", index=False)
 
-        print(f"\n=== MODELO ELO + FIFA ({args.sims:,} simulaciones) ===")
-        comp_results = run_monte_carlo(elo_ratings, args.sims, use_composite=True, elo_weight=args.elo_weight)
+        print(f"\n=== MODELO ELO + FIFA + Features ({args.sims:,} simulaciones) ===")
+        comp_results = run_monte_carlo(
+            elo_ratings, args.sims, use_composite=True, elo_weight=args.elo_weight,
+            attack_defense=attack_defense, form_adj=form_adj,
+        )
         comp_results.to_csv("results/csv/predicciones_compuesto.csv", index=False)
 
         merged = compare_models(elo_results, comp_results)
@@ -212,12 +234,14 @@ def main():
         mc_results = comp_results
 
     else:
-        label = "ELO + FIFA" if args.composite else "ELO puro"
+        label = "ELO + FIFA + Features" if args.composite else "ELO puro"
         print(f"\n=== SIMULACIÓN MONTE CARLO — {label} ({args.sims:,} torneos) ===")
         mc_results = run_monte_carlo(
             elo_ratings, args.sims,
             use_composite=args.composite,
             elo_weight=args.elo_weight,
+            attack_defense=attack_defense,
+            form_adj=form_adj,
         )
         mc_results.to_csv("results/csv/predicciones_campeon.csv", index=False)
 
